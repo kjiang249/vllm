@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
 import typing
 from collections.abc import Callable, Iterable
 from itertools import islice
@@ -477,16 +478,39 @@ class DeepseekV4MegaMoEExperts(nn.Module):
                 else None,
             )
 
-        prepare_megamoe_inputs(
-            hidden_states,
-            topk_weights,
-            topk_ids,
-            symm_buffer.x[:num_tokens],
-            symm_buffer.x_sf[:num_tokens],
-            symm_buffer.topk_idx[:num_tokens],
-            symm_buffer.topk_weights[:num_tokens],
-            is_padding=is_padding,
-        )
+        use_fp4_acts = os.environ.get("VLLM_DSV4_MEGA_MOE_USE_FP4_ACTS") == "1"
+        if use_fp4_acts:
+            # The native SGLang DeepGEMM path allocates packed E2M1 input and
+            # must use its matching pre-dispatch kernel. Padding follows the
+            # same expert=-1/weight=0 convention used by pinned SGLang.
+            if is_padding is not None:
+                topk_ids = torch.where(is_padding.unsqueeze(1), -1, topk_ids)
+                topk_weights = torch.where(
+                    is_padding.unsqueeze(1), 0.0, topk_weights
+                )
+            deep_gemm.mega_moe_pre_dispatch(
+                hidden_states,
+                topk_ids.to(torch.int32),
+                topk_weights.to(torch.float32),
+                symm_buffer.x,
+                symm_buffer.x_sf,
+                symm_buffer.topk_idx,
+                symm_buffer.topk_weights,
+                num_tokens=num_tokens,
+                group_size=32,
+                use_fp4_acts=True,
+            )
+        else:
+            prepare_megamoe_inputs(
+                hidden_states,
+                topk_weights,
+                topk_ids,
+                symm_buffer.x[:num_tokens],
+                symm_buffer.x_sf[:num_tokens],
+                symm_buffer.topk_idx[:num_tokens],
+                symm_buffer.topk_weights[:num_tokens],
+                is_padding=is_padding,
+            )
 
         # This method must have been already called during the weight loading phase.
         # We call it again here to cover the dummy weight loading case.
