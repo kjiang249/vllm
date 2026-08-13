@@ -1048,6 +1048,23 @@ class VllmConfig:
                 "are normalized over the same nucleus as the sampling mask"
             )
 
+    def _verify_adaptive_prefill_alignment(self) -> None:
+        if not self.scheduler_config.enable_adaptive_prefill_alignment:
+            return
+
+        parallel_config = self.parallel_config
+        if parallel_config.data_parallel_size <= 1:
+            raise ValueError(
+                "Adaptive prefill alignment requires --data-parallel-size > 1."
+            )
+        if self.model_config is None or not self.model_config.is_moe:
+            raise ValueError("Adaptive prefill alignment requires a MoE model.")
+        if parallel_config.enable_elastic_ep:
+            raise ValueError(
+                "Adaptive prefill alignment is not compatible with elastic "
+                "expert parallelism."
+            )
+
     def __post_init__(self):
         """Verify configs are valid & consistent with each other."""
 
@@ -1056,6 +1073,8 @@ class VllmConfig:
 
         if self.performance_mode != "balanced":
             logger.info_once("Performance mode set to '%s'.", self.performance_mode)
+
+        self._verify_adaptive_prefill_alignment()
 
         self.try_verify_and_update_config()
 
